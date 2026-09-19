@@ -3,6 +3,7 @@ package com.countdown.wallpaper
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
@@ -45,15 +46,20 @@ class CountdownWallpaperService : WallpaperService() {
             letterSpacing = 0.15f
         }
 
+        private val trackPaint = Paint().apply { isAntiAlias = true; color = Color.argb(45, 255, 255, 255) }
+        private val fillPaint = Paint().apply { isAntiAlias = true }
+        private val tickPaint = Paint().apply {
+            isAntiAlias = true
+            color = Color.GRAY
+            textAlign = Paint.Align.CENTER
+        }
+
         private val drawRunnable = object : Runnable {
             override fun run() {
                 drawFrame()
                 if (visible) {
-                    val delay = if (motivationLayer.isTransitioning()) {
-                        40L
-                    } else {
-                        1000 - (System.currentTimeMillis() % 1000)
-                    }
+                    val delay = if (motivationLayer.isTransitioning()) 40L
+                    else 1000 - (System.currentTimeMillis() % 1000)
                     handler.postDelayed(this, delay)
                 }
             }
@@ -62,7 +68,7 @@ class CountdownWallpaperService : WallpaperService() {
         override fun onVisibilityChanged(isVisible: Boolean) {
             visible = isVisible
             if (isVisible) {
-                motivationLayer.refreshUserImages()
+                motivationLayer.refreshContent()
                 handler.removeCallbacks(drawRunnable)
                 handler.post(drawRunnable)
             } else {
@@ -89,6 +95,23 @@ class CountdownWallpaperService : WallpaperService() {
                 if (canvas != null) render(canvas)
             } finally {
                 if (canvas != null) holder.unlockCanvasAndPost(canvas)
+            }
+        }
+
+        /** Green 6am-2pm, Yellow 2pm-10pm, Red draining 10pm -> 6am (IST). */
+        private fun computeEnergy(now: Long): Pair<Int, Float> {
+            val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"))
+            cal.timeInMillis = now
+            val minutesNow = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+            var sinceStart = minutesNow - 6 * 60
+            if (sinceStart < 0) sinceStart += 1440
+            return when {
+                sinceStart < 480 -> Pair(Color.parseColor("#43A047"), 1f)
+                sinceStart < 960 -> Pair(Color.parseColor("#FDD835"), 1f)
+                else -> {
+                    val drain = (sinceStart - 960).toFloat() / 480f
+                    Pair(Color.parseColor("#E53935"), (1f - drain).coerceIn(0f, 1f))
+                }
             }
         }
 
@@ -127,6 +150,25 @@ class CountdownWallpaperService : WallpaperService() {
                 canvas.drawText(values[i], cx, centerY, numberPaint)
                 canvas.drawText(labels[i], cx, centerY + labelTextSize * 2.2f, labelPaint)
             }
+
+            // ---- Energy bar (flat colors, no glow) ----
+            val (energyColor, energyFill) = computeEnergy(now)
+            val barWidth = w * 0.78f
+            val barHeight = h * 0.016f
+            val barLeft = (w - barWidth) / 2f
+            val barTop = centerY + labelTextSize * 4.6f
+            val barRadius = barHeight / 2f
+
+            canvas.drawRoundRect(RectF(barLeft, barTop, barLeft + barWidth, barTop + barHeight), barRadius, barRadius, trackPaint)
+            fillPaint.color = energyColor
+            canvas.drawRoundRect(RectF(barLeft, barTop, barLeft + barWidth * energyFill, barTop + barHeight), barRadius, barRadius, fillPaint)
+
+            tickPaint.textSize = w * 0.022f
+            val tickY = barTop + barHeight + tickPaint.textSize + h * 0.012f
+            canvas.drawText("6 AM", barLeft, tickY, tickPaint)
+            canvas.drawText("2 PM", barLeft + barWidth * (480f / 1440f), tickY, tickPaint)
+            canvas.drawText("10 PM", barLeft + barWidth * (960f / 1440f), tickY, tickPaint)
+            canvas.drawText("6 AM", barLeft + barWidth, tickY, tickPaint)
 
             motivationLayer.update(now)
             motivationLayer.draw(canvas, w, h, now)
