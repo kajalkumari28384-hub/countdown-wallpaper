@@ -19,6 +19,7 @@ class CountdownWallpaperService : WallpaperService() {
 
         private val handler = Handler(Looper.getMainLooper())
         private var visible = false
+        private val motivationLayer = MotivationLayer(this@CountdownWallpaperService)
 
         private val targetMillis: Long by lazy {
             val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"))
@@ -27,10 +28,7 @@ class CountdownWallpaperService : WallpaperService() {
             cal.timeInMillis
         }
 
-        private val bgPaint = Paint().apply {
-            color = Color.BLACK
-            style = Paint.Style.FILL
-        }
+        private val bgPaint = Paint().apply { color = Color.BLACK; style = Paint.Style.FILL }
 
         private val numberPaint = Paint().apply {
             color = Color.WHITE
@@ -51,7 +49,11 @@ class CountdownWallpaperService : WallpaperService() {
             override fun run() {
                 drawFrame()
                 if (visible) {
-                    val delay = 1000 - (System.currentTimeMillis() % 1000)
+                    val delay = if (motivationLayer.isTransitioning()) {
+                        40L
+                    } else {
+                        1000 - (System.currentTimeMillis() % 1000)
+                    }
                     handler.postDelayed(this, delay)
                 }
             }
@@ -60,6 +62,7 @@ class CountdownWallpaperService : WallpaperService() {
         override fun onVisibilityChanged(isVisible: Boolean) {
             visible = isVisible
             if (isVisible) {
+                motivationLayer.refreshUserImages()
                 handler.removeCallbacks(drawRunnable)
                 handler.post(drawRunnable)
             } else {
@@ -73,12 +76,7 @@ class CountdownWallpaperService : WallpaperService() {
             handler.removeCallbacks(drawRunnable)
         }
 
-        override fun onSurfaceChanged(
-            holder: SurfaceHolder,
-            format: Int,
-            width: Int,
-            height: Int
-        ) {
+        override fun onSurfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
             super.onSurfaceChanged(holder, format, width, height)
             if (visible) drawFrame()
         }
@@ -88,23 +86,20 @@ class CountdownWallpaperService : WallpaperService() {
             var canvas: Canvas? = null
             try {
                 canvas = holder.lockCanvas()
-                if (canvas != null) {
-                    render(canvas)
-                }
+                if (canvas != null) render(canvas)
             } finally {
-                if (canvas != null) {
-                    holder.unlockCanvasAndPost(canvas)
-                }
+                if (canvas != null) holder.unlockCanvasAndPost(canvas)
             }
         }
 
         private fun render(canvas: Canvas) {
             val w = canvas.width.toFloat()
             val h = canvas.height.toFloat()
+            val now = System.currentTimeMillis()
 
             canvas.drawRect(0f, 0f, w, h, bgPaint)
 
-            val remaining = (targetMillis - System.currentTimeMillis()).coerceAtLeast(0L)
+            val remaining = (targetMillis - now).coerceAtLeast(0L)
             val totalSeconds = remaining / 1000
             val days = totalSeconds / 86400
             val hours = (totalSeconds % 86400) / 3600
@@ -132,6 +127,9 @@ class CountdownWallpaperService : WallpaperService() {
                 canvas.drawText(values[i], cx, centerY, numberPaint)
                 canvas.drawText(labels[i], cx, centerY + labelTextSize * 2.2f, labelPaint)
             }
+
+            motivationLayer.update(now)
+            motivationLayer.draw(canvas, w, h, now)
         }
     }
 }
