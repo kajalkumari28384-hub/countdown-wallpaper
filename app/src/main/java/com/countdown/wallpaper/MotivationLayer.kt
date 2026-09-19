@@ -13,43 +13,81 @@ import java.io.File
 import kotlin.math.cos
 import kotlin.random.Random
 
+/**
+ * Floating text/image layer — no background box, no glow.
+ * Two independent "slots" (upper band above the timer, lower band
+ * below the energy bar) each cycle their own content at random
+ * intervals and random left/center/right positions, so different
+ * things can be visible in different corners at the same time —
+ * never inside the timer or energy-bar zone.
+ */
 class MotivationLayer(private val context: Context) {
 
     companion object {
-        const val CARD_INTERVAL_MS = 7000L
-        const val TRANSITION_MS = 700L
+        const val MIN_INTERVAL_MS = 6000L
+        const val MAX_INTERVAL_MS = 9500L
+        const val TRANSITION_MS = 650L
         const val MAX_USER_IMAGES = 12
         const val USER_IMAGES_DIR = "motivation_images"
+        const val PREFS_NAME = "motivation_prefs"
+        const val KEY_HIDDEN = "hidden_titles"
+
+        // Safe zones as a fraction of screen height — kept well clear
+        // of the timer + energy bar band in the middle of the screen.
+        const val UPPER_BAND_TOP = 0.08f
+        const val UPPER_BAND_BOTTOM = 0.36f
+        const val LOWER_BAND_TOP = 0.68f
+        const val LOWER_BAND_BOTTOM = 0.90f
 
         fun userImagesDir(context: Context): File =
             File(context.filesDir, USER_IMAGES_DIR).apply { if (!exists()) mkdirs() }
+
+        fun getHiddenTitles(context: Context): MutableSet<String> {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            return HashSet(prefs.getStringSet(KEY_HIDDEN, emptySet()) ?: emptySet())
+        }
+
+        fun hideTitle(context: Context, title: String) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val current = getHiddenTitles(context)
+            current.add(title)
+            prefs.edit().putStringSet(KEY_HIDDEN, current).apply()
+        }
+
+        fun restoreAllDefaults(context: Context) {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().putStringSet(KEY_HIDDEN, emptySet()).apply()
+        }
     }
 
-    private var cards: List<MotivationCard> = MotivationContent.defaultCards()
+    private var pool: List<MotivationCard> = emptyList()
     private val userBitmaps = LinkedHashMap<String, Bitmap>()
 
-    private var currentCard: MotivationCard? = null
-    private var nextCard: MotivationCard? = null
-    private var lastSwitchTime = 0L
-    private var transitionStart = 0L
-    private var lastIndex = -1
+    private data class SlotState(
+        var current: MotivationCard? = null,
+        var next: MotivationCard? = null,
+        var lastSwitchTime: Long = 0L,
+        var transitionStart: Long = 0L,
+        var intervalMs: Long = 7000L,
+        var align: Paint.Align = Paint.Align.CENTER,
+        var relX: Float = 0.5f,
+        var relYInBand: Float = 0.5f,
+        var lastKey: String? = null
+    )
 
-    private val bgPaint = Paint().apply { isAntiAlias = true; color = Color.argb(28, 255, 255, 255) }
-    private val borderPaint = Paint().apply {
-        isAntiAlias = true; style = Paint.Style.STROKE; strokeWidth = 1.5f
-        color = Color.argb(60, 255, 255, 255)
-    }
-    private val titlePaint = Paint().apply {
-        isAntiAlias = true; color = Color.WHITE; textAlign = Paint.Align.CENTER
-        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-    }
-    private val subtitlePaint = Paint().apply {
-        isAntiAlias = true; color = Color.LTGRAY; textAlign = Paint.Align.CENTER
-        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-    }
-    private val spinePaint = Paint().apply { isAntiAlias = true }
+    private val upperSlot = SlotState(intervalMs = randomInterval())
+    private val lowerSlot = SlotState(intervalMs = randomInterval())
 
-    fun refreshUserImages() {
+    private fun randomInterval() = Random.nextLong(MIN_INTERVAL_MS, MAX_INTERVAL_MS)
+
+    private val textPaint = Paint().apply {
+        isAntiAlias = true
+        color = Color.WHITE
+        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+    }
+
+    fun refreshContent() {
+        val hidden = getHiddenTitles(context)
         val dir = userImagesDir(context)
         val files = dir.listFiles { f -> f.isFile }?.sortedByDescending { it.lastModified() }
             ?.take(MAX_USER_IMAGES) ?: emptyList()
@@ -57,114 +95,119 @@ class MotivationLayer(private val context: Context) {
         val validPaths = files.map { it.absolutePath }.toSet()
         val it = userBitmaps.entries.iterator()
         while (it.hasNext()) { if (it.next().key !in validPaths) it.remove() }
-
         for (f in files) {
             if (!userBitmaps.containsKey(f.absolutePath)) {
-                decodeSmall(f.absolutePath, 320)?.let { bmp -> userBitmaps[f.absolutePath] = bmp }
+                decodeSmall(f.absolutePath, 400)?.let { bmp -> userBitmaps[f.absolutePath] = bmp }
             }
         }
 
-        cards = MotivationContent.defaultCards() + files.map {
+        val defaults = MotivationContent.defaultCards().filter { it.title !in hidden }
+        val images = files.map {
             MotivationCard(CardType.IMAGE, it.nameWithoutExtension, imagePath = it.absolutePath)
         }
+        pool = defaults + images
     }
 
-    fun isTransitioning(): Boolean = nextCard != null
+    fun isTransitioning(): Boolean = upperSlot.next != null || lowerSlot.next != null
 
     fun update(now: Long) {
-        if (currentCard == null && cards.isNotEmpty()) {
-            currentCard = cards[Random.nextInt(cards.size)]
-            lastSwitchTime = now
+        if (pool.isEmpty()) return
+        updateSlot(upperSlot, now)
+        updateSlot(lowerSlot, now)
+    }
+
+    private fun updateSlot(slot: SlotState, now: Long) {
+        if (slot.current == null) {
+            slot.current = pickCard(slot)
+            slot.lastSwitchTime = now
+            randomizePosition(slot)
             return
         }
-        if (nextCard == null && cards.size > 1 && now - lastSwitchTime >= CARD_INTERVAL_MS) {
-            var idx: Int
-            do { idx = Random.nextInt(cards.size) } while (idx == lastIndex)
-            lastIndex = idx
-            nextCard = cards[idx]
-            transitionStart = now
+        if (slot.next == null && now - slot.lastSwitchTime >= slot.intervalMs) {
+            slot.next = pickCard(slot)
+            slot.transitionStart = now
         }
-        if (nextCard != null && now - transitionStart >= TRANSITION_MS) {
-            currentCard = nextCard
-            nextCard = null
-            lastSwitchTime = now
+        if (slot.next != null && now - slot.transitionStart >= TRANSITION_MS) {
+            slot.current = slot.next
+            slot.next = null
+            slot.lastSwitchTime = now
+            slot.intervalMs = randomInterval()
+            randomizePosition(slot)
         }
     }
 
-    fun draw(canvas: Canvas, screenW: Float, screenH: Float, now: Long) {
-        val card = currentCard ?: return
-        val cardW = screenW * 0.74f
-        val cardH = screenH * 0.095f
-        val cx = screenW / 2f
-        val cy = screenH * 0.80f
+    private fun pickCard(slot: SlotState): MotivationCard {
+        if (pool.size == 1) return pool[0]
+        var card: MotivationCard
+        do { card = pool[Random.nextInt(pool.size)] } while (card.title == slot.lastKey)
+        slot.lastKey = card.title
+        return card
+    }
 
-        titlePaint.textSize = screenW * 0.034f
-        subtitlePaint.textSize = screenW * 0.024f
+    private fun randomizePosition(slot: SlotState) {
+        when (Random.nextInt(3)) {
+            0 -> { slot.align = Paint.Align.LEFT; slot.relX = 0.07f }
+            1 -> { slot.align = Paint.Align.CENTER; slot.relX = 0.5f }
+            else -> { slot.align = Paint.Align.RIGHT; slot.relX = 0.93f }
+        }
+        slot.relYInBand = 0.15f + Random.nextFloat() * 0.7f
+    }
 
-        if (nextCard != null) {
-            val raw = ((now - transitionStart).toFloat() / TRANSITION_MS).coerceIn(0f, 1f)
+    fun draw(canvas: Canvas, w: Float, h: Float, now: Long) {
+        if (pool.isEmpty()) return
+        drawSlot(canvas, upperSlot, w, h, UPPER_BAND_TOP, UPPER_BAND_BOTTOM, now)
+        drawSlot(canvas, lowerSlot, w, h, LOWER_BAND_TOP, LOWER_BAND_BOTTOM, now)
+    }
+
+    private fun drawSlot(
+        canvas: Canvas, slot: SlotState, w: Float, h: Float,
+        bandTopRatio: Float, bandBottomRatio: Float, now: Long
+    ) {
+        val card = slot.current ?: return
+        val cx = w * slot.relX
+        val cy = h * (bandTopRatio + (bandBottomRatio - bandTopRatio) * slot.relYInBand)
+
+        if (slot.next != null) {
+            val raw = ((now - slot.transitionStart).toFloat() / TRANSITION_MS).coerceIn(0f, 1f)
             val eased = (1 - cos(raw * Math.PI)).toFloat() / 2f
-            drawCard(canvas, card, cx, cy, cardW, cardH, 1f - eased, -eased * 14f)
-            drawCard(canvas, nextCard!!, cx, cy, cardW, cardH, eased, (1f - eased) * 14f)
+            drawCard(canvas, card, cx, cy, w, h, slot.align, 1f - eased, -eased * 10f)
+            drawCard(canvas, slot.next!!, cx, cy, w, h, slot.align, eased, (1f - eased) * 10f)
         } else {
-            drawCard(canvas, card, cx, cy, cardW, cardH, 1f, 0f)
+            drawCard(canvas, card, cx, cy, w, h, slot.align, 1f, 0f)
         }
     }
 
     private fun drawCard(
         canvas: Canvas, card: MotivationCard, cx: Float, cy: Float,
-        w: Float, h: Float, alpha: Float, riseOffset: Float
+        w: Float, h: Float, align: Paint.Align, alpha: Float, riseOffset: Float
     ) {
         if (alpha <= 0.01f) return
-        val a = (alpha * 255).toInt().coerceIn(0, 255)
-        val top = cy - h / 2f + riseOffset
-        val bottom = cy + h / 2f + riseOffset
-        val left = cx - w / 2f
-        val right = cx + w / 2f
-        val rect = RectF(left, top, right, bottom)
-        val radius = h * 0.28f
+        val a = (alpha * 235).toInt().coerceIn(0, 235)
 
-        bgPaint.alpha = (28 * alpha).toInt().coerceIn(0, 255)
-        borderPaint.alpha = (60 * alpha).toInt().coerceIn(0, 255)
-        canvas.drawRoundRect(rect, radius, radius, bgPaint)
-        canvas.drawRoundRect(rect, radius, radius, borderPaint)
+        if (card.type == CardType.IMAGE) {
+            val bmp = userBitmaps[card.imagePath] ?: return
+            val maxH = h * 0.10f
+            val maxW = w * 0.32f
+            var drawH = maxH
+            var drawW = drawH * (bmp.width.toFloat() / bmp.height.toFloat())
+            if (drawW > maxW) { drawW = maxW; drawH = drawW * (bmp.height.toFloat() / bmp.width.toFloat()) }
 
-        titlePaint.alpha = a
-        subtitlePaint.alpha = (a * 0.8f).toInt().coerceIn(0, 255)
-
-        when (card.type) {
-            CardType.BOOK -> {
-                spinePaint.color = card.accentColor ?: Color.DKGRAY
-                spinePaint.alpha = a
-                val spineW = h * 0.34f
-                val spineRect = RectF(left + h * 0.18f, top + h * 0.16f, left + h * 0.18f + spineW, bottom - h * 0.16f)
-                canvas.drawRoundRect(spineRect, 6f, 6f, spinePaint)
-                val textX = spineRect.right + (right - spineRect.right) / 2f
-                canvas.drawText(card.title, textX, cy + riseOffset - h * 0.03f, titlePaint)
-                card.subtitle?.let { canvas.drawText(it, textX, cy + riseOffset + h * 0.24f, subtitlePaint) }
+            val left = when (align) {
+                Paint.Align.LEFT -> cx
+                Paint.Align.RIGHT -> cx - drawW
+                else -> cx - drawW / 2f
             }
-            CardType.IMAGE -> {
-                val bmp = userBitmaps[card.imagePath]
-                if (bmp != null) {
-                    val imgH = h * 0.78f
-                    val imgW = imgH * (bmp.width.toFloat() / bmp.height.toFloat())
-                    val imgLeft = left + h * 0.16f
-                    val imgTop = cy + riseOffset - imgH / 2f
-                    val srcRect = Rect(0, 0, bmp.width, bmp.height)
-                    val dstRect = RectF(imgLeft, imgTop, imgLeft + imgW, imgTop + imgH)
-                    val p = Paint(Paint.ANTI_ALIAS_FLAG)
-                    p.alpha = a
-                    canvas.drawBitmap(bmp, srcRect, dstRect, p)
-                    val textX = imgLeft + imgW + (right - (imgLeft + imgW)) / 2f
-                    canvas.drawText(card.title, textX, cy + riseOffset, titlePaint)
-                } else {
-                    canvas.drawText(card.title, cx, cy + riseOffset, titlePaint)
-                }
-            }
-            else -> {
-                canvas.drawText(card.title, cx, cy + riseOffset - (if (card.subtitle != null) h * 0.06f else 0f), titlePaint)
-                card.subtitle?.let { canvas.drawText(it, cx, cy + riseOffset + h * 0.22f, subtitlePaint) }
-            }
+            val top = cy + riseOffset - drawH / 2f
+            val dst = RectF(left, top, left + drawW, top + drawH)
+            val src = Rect(0, 0, bmp.width, bmp.height)
+            val p = Paint(Paint.ANTI_ALIAS_FLAG)
+            p.alpha = a
+            canvas.drawBitmap(bmp, src, dst, p)
+        } else {
+            textPaint.textSize = w * 0.046f
+            textPaint.textAlign = align
+            textPaint.alpha = a
+            canvas.drawText(card.title, cx, cy + riseOffset, textPaint)
         }
     }
 
