@@ -152,7 +152,8 @@ class MotivationLayer(private val context: Context) {
                     val imgTop = cy + riseOffset - imgH / 2f
                     val srcRect = Rect(0, 0, bmp.width, bmp.height)
                     val dstRect = RectF(imgLeft, imgTop, imgLeft + imgW, imgTop + imgH)
-                    val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { alpha = a }
+                    val p = Paint(Paint.ANTI_ALIAS_FLAG)
+                    p.alpha = a
                     canvas.drawBitmap(bmp, srcRect, dstRect, p)
                     val textX = imgLeft + imgW + (right - (imgLeft + imgW)) / 2f
                     canvas.drawText(card.title, textX, cy + riseOffset, titlePaint)
