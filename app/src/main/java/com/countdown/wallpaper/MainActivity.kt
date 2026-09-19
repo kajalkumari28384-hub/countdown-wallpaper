@@ -36,7 +36,7 @@ class MainActivity : Activity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "2027 Countdown"
+            text = "YOUV Mind"
             setTextColor(Color.WHITE)
             textSize = 24f
             gravity = Gravity.CENTER
@@ -68,8 +68,8 @@ class MainActivity : Activity() {
         }, spacedParams())
 
         root.addView(Button(this).apply {
-            text = "Remove All Custom Images"
-            setOnClickListener { clearCustomImages() }
+            text = "Manage Content"
+            setOnClickListener { startActivity(Intent(this@MainActivity, ManageContentActivity::class.java)) }
         }, spacedParams())
 
         setContentView(root)
@@ -135,12 +135,6 @@ class MainActivity : Activity() {
         } catch (e: Exception) {
             Toast.makeText(this, "Couldn't add image: ${e.message}", Toast.LENGTH_SHORT).show()
         }
-    }
-
-    private fun clearCustomImages() {
-        MotivationLayer.userImagesDir(this).listFiles()?.forEach { it.delete() }
-        Toast.makeText(this, "Custom images removed", Toast.LENGTH_SHORT).show()
-        updateStatusText()
     }
 
     private fun updateStatusText() {
