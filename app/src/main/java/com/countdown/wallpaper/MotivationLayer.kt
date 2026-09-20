@@ -3,9 +3,11 @@ package com.countdown.wallpaper
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -14,12 +16,11 @@ import kotlin.math.cos
 import kotlin.random.Random
 
 /**
- * Floating text/image layer — no background box, no glow.
- * Two independent "slots" (upper band above the timer, lower band
- * below the energy bar) each cycle their own content at random
- * intervals and random left/center/right positions, so different
- * things can be visible in different corners at the same time —
- * never inside the timer or energy-bar zone.
+ * Floating text/image layer — no background box, no glow on text.
+ * Two independent slots:
+ *   - upperSlot: position randomizes every time its content changes
+ *   - lowerSlot: position is FIXED forever (only the content changes)
+ * Both stay clear of the timer + energy bar band in the middle.
  */
 class MotivationLayer(private val context: Context) {
 
@@ -32,12 +33,13 @@ class MotivationLayer(private val context: Context) {
         const val PREFS_NAME = "motivation_prefs"
         const val KEY_HIDDEN = "hidden_titles"
 
-        // Safe zones as a fraction of screen height — kept well clear
-        // of the timer + energy bar band in the middle of the screen.
         const val UPPER_BAND_TOP = 0.08f
         const val UPPER_BAND_BOTTOM = 0.36f
         const val LOWER_BAND_TOP = 0.68f
-        const val LOWER_BAND_BOTTOM = 0.90f
+        const val LOWER_BAND_BOTTOM = 0.87f
+
+        const val LOWER_FIXED_RELX = 0.08f
+        const val LOWER_FIXED_RELY_IN_BAND = 0.5f
 
         fun userImagesDir(context: Context): File =
             File(context.filesDir, USER_IMAGES_DIR).apply { if (!exists()) mkdirs() }
@@ -69,14 +71,21 @@ class MotivationLayer(private val context: Context) {
         var lastSwitchTime: Long = 0L,
         var transitionStart: Long = 0L,
         var intervalMs: Long = 7000L,
-        var align: Paint.Align = Paint.Align.CENTER,
-        var relX: Float = 0.5f,
+        var align: Paint.Align = Paint.Align.LEFT,
+        var relX: Float = 0.08f,
         var relYInBand: Float = 0.5f,
-        var lastKey: String? = null
+        var lastKey: String? = null,
+        val positionIsFixed: Boolean = false
     )
 
-    private val upperSlot = SlotState(intervalMs = randomInterval())
-    private val lowerSlot = SlotState(intervalMs = randomInterval())
+    private val upperSlot = SlotState(intervalMs = randomInterval(), positionIsFixed = false)
+    private val lowerSlot = SlotState(
+        intervalMs = randomInterval(),
+        align = Paint.Align.LEFT,
+        relX = LOWER_FIXED_RELX,
+        relYInBand = LOWER_FIXED_RELY_IN_BAND,
+        positionIsFixed = true
+    )
 
     private fun randomInterval() = Random.nextLong(MIN_INTERVAL_MS, MAX_INTERVAL_MS)
 
@@ -84,6 +93,14 @@ class MotivationLayer(private val context: Context) {
         isAntiAlias = true
         color = Color.WHITE
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+    }
+
+    // Soft glow behind uploaded images — subtle, no color, just a gentle
+    // white blur so the image looks a touch "lifted" off the black background.
+    private val glowPaint = Paint().apply {
+        isAntiAlias = true
+        color = Color.argb(70, 255, 255, 255)
+        maskFilter = BlurMaskFilter(28f, BlurMaskFilter.Blur.NORMAL)
     }
 
     fun refreshContent() {
@@ -120,7 +137,7 @@ class MotivationLayer(private val context: Context) {
         if (slot.current == null) {
             slot.current = pickCard(slot)
             slot.lastSwitchTime = now
-            randomizePosition(slot)
+            if (!slot.positionIsFixed) randomizePosition(slot)
             return
         }
         if (slot.next == null && now - slot.lastSwitchTime >= slot.intervalMs) {
@@ -132,7 +149,7 @@ class MotivationLayer(private val context: Context) {
             slot.next = null
             slot.lastSwitchTime = now
             slot.intervalMs = randomInterval()
-            randomizePosition(slot)
+            if (!slot.positionIsFixed) randomizePosition(slot)
         }
     }
 
@@ -200,9 +217,21 @@ class MotivationLayer(private val context: Context) {
             val top = cy + riseOffset - drawH / 2f
             val dst = RectF(left, top, left + drawW, top + drawH)
             val src = Rect(0, 0, bmp.width, bmp.height)
+            val cornerRadius = drawH * 0.12f
+
+            // Soft backlight glow, slightly larger than the image, faded by alpha.
+            glowPaint.alpha = (70 * alpha).toInt().coerceIn(0, 70)
+            val glowPad = drawH * 0.06f
+            val glowRect = RectF(dst.left - glowPad, dst.top - glowPad, dst.right + glowPad, dst.bottom + glowPad)
+            canvas.drawRoundRect(glowRect, cornerRadius + glowPad, cornerRadius + glowPad, glowPaint)
+
+            val clipPath = Path().apply { addRoundRect(dst, cornerRadius, cornerRadius, Path.Direction.CW) }
+            canvas.save()
+            canvas.clipPath(clipPath)
             val p = Paint(Paint.ANTI_ALIAS_FLAG)
             p.alpha = a
             canvas.drawBitmap(bmp, src, dst, p)
+            canvas.restore()
         } else {
             textPaint.textSize = w * 0.046f
             textPaint.textAlign = align
