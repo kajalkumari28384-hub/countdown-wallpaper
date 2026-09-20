@@ -3,6 +3,7 @@ package com.countdown.wallpaper
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Handler
@@ -11,6 +12,7 @@ import android.service.wallpaper.WallpaperService
 import android.view.SurfaceHolder
 import java.util.Calendar
 import java.util.TimeZone
+import kotlin.math.sin
 
 class CountdownWallpaperService : WallpaperService() {
 
@@ -53,15 +55,16 @@ class CountdownWallpaperService : WallpaperService() {
             color = Color.GRAY
             textAlign = Paint.Align.CENTER
         }
+        private val phasePaint = Paint().apply {
+            isAntiAlias = true
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        }
 
         private val drawRunnable = object : Runnable {
             override fun run() {
                 drawFrame()
-                if (visible) {
-                    val delay = if (motivationLayer.isTransitioning()) 40L
-                    else 1000 - (System.currentTimeMillis() % 1000)
-                    handler.postDelayed(this, delay)
-                }
+                if (visible) handler.postDelayed(this, 180L)
             }
         }
 
@@ -98,36 +101,30 @@ class CountdownWallpaperService : WallpaperService() {
             }
         }
 
-        /**
-         * Each 8-hour phase is its own "tank": full at the start of that
-         * phase, drains to empty by the end of it, then the next phase
-         * resets to full with its own color. (IST)
-         *   6am-2pm  -> green,  drains over those 8 hours
-         *   2pm-10pm -> yellow, drains over those 8 hours
-         *   10pm-6am -> red,    drains over those 8 hours
-         */
-        private fun computeEnergy(now: Long): Pair<Int, Float> {
+        private fun computeEnergy(now: Long): Triple<Int, Float, Int> {
             val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"))
             cal.timeInMillis = now
             val minutesNow = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
             var sinceStart = minutesNow - 6 * 60
             if (sinceStart < 0) sinceStart += 1440
 
-            val phaseLength = 480f
-            return when {
-                sinceStart < 480 -> {
-                    val fill = 1f - (sinceStart / phaseLength)
-                    Pair(Color.parseColor("#43A047"), fill.coerceIn(0f, 1f))
-                }
-                sinceStart < 960 -> {
-                    val fill = 1f - ((sinceStart - 480) / phaseLength)
-                    Pair(Color.parseColor("#FDD835"), fill.coerceIn(0f, 1f))
-                }
-                else -> {
-                    val fill = 1f - ((sinceStart - 960) / phaseLength)
-                    Pair(Color.parseColor("#E53935"), fill.coerceIn(0f, 1f))
-                }
+            val phaseLength = 480
+            val withinPhase = sinceStart % phaseLength
+            val minutesLeft = phaseLength - withinPhase
+            val fill = 1f - (withinPhase.toFloat() / phaseLength)
+
+            val color = when {
+                sinceStart < 480 -> Color.parseColor("#43A047")
+                sinceStart < 960 -> Color.parseColor("#FDD835")
+                else -> Color.parseColor("#E53935")
             }
+            return Triple(color, fill.coerceIn(0f, 1f), minutesLeft)
+        }
+
+        private fun formatMinutes(mins: Int): String {
+            val h = mins / 60
+            val m = mins % 60
+            return if (h > 0) "${h}h ${m}m left" else "${m}m left"
         }
 
         private fun render(canvas: Canvas) {
@@ -166,20 +163,54 @@ class CountdownWallpaperService : WallpaperService() {
                 canvas.drawText(labels[i], cx, centerY + labelTextSize * 2.2f, labelPaint)
             }
 
-            // ---- Energy bar (flat colors, no glow) ----
-            val (energyColor, energyFill) = computeEnergy(now)
+            val (energyColor, energyFill, minutesLeft) = computeEnergy(now)
             val barWidth = w * 0.78f
             val barHeight = h * 0.016f
             val barLeft = (w - barWidth) / 2f
             val barTop = centerY + labelTextSize * 4.6f
+            val barCenterY = barTop + barHeight / 2f
             val barRadius = barHeight / 2f
 
             canvas.drawRoundRect(RectF(barLeft, barTop, barLeft + barWidth, barTop + barHeight), barRadius, barRadius, trackPaint)
-            fillPaint.color = energyColor
-            canvas.drawRoundRect(RectF(barLeft, barTop, barLeft + barWidth * energyFill, barTop + barHeight), barRadius, barRadius, fillPaint)
+
+            val fillWidth = barWidth * energyFill
+            if (fillWidth > 1f) {
+                fillPaint.color = energyColor
+                val waveLengthPx = h * 0.05f
+                val amplitude = barHeight * 0.32f
+                val phase = (now % 4000L).toFloat() / 4000f * (Math.PI.toFloat() * 2f)
+                val step = (h * 0.006f).coerceAtLeast(3f)
+
+                val topPoints = ArrayList<Pair<Float, Float>>()
+                val bottomPoints = ArrayList<Pair<Float, Float>>()
+                var xx = 0f
+                while (xx <= fillWidth) {
+                    val angle = (xx / waveLengthPx) + phase
+                    val wob = amplitude * sin(angle.toDouble()).toFloat()
+                    topPoints.add(Pair(barLeft + xx, barCenterY - barHeight / 2f - wob))
+                    bottomPoints.add(Pair(barLeft + xx, barCenterY + barHeight / 2f - wob))
+                    xx += step
+                }
+                if (topPoints.isNotEmpty()) {
+                    val wavePath = Path()
+                    wavePath.moveTo(topPoints[0].first, topPoints[0].second)
+                    for (pt in topPoints) wavePath.lineTo(pt.first, pt.second)
+                    for (pt in bottomPoints.asReversed()) wavePath.lineTo(pt.first, pt.second)
+                    wavePath.close()
+                    canvas.save()
+                    canvas.clipRect(barLeft, barTop - amplitude - 4f, barLeft + barWidth, barTop + barHeight + amplitude + 4f)
+                    canvas.drawPath(wavePath, fillPaint)
+                    canvas.restore()
+                }
+            }
+
+            phasePaint.textSize = w * 0.026f
+            phasePaint.color = Color.argb(200, Color.red(energyColor), Color.green(energyColor), Color.blue(energyColor))
+            val phaseTextY = barTop + barHeight + phasePaint.textSize + h * 0.014f
+            canvas.drawText(formatMinutes(minutesLeft), w / 2f, phaseTextY, phasePaint)
 
             tickPaint.textSize = w * 0.022f
-            val tickY = barTop + barHeight + tickPaint.textSize + h * 0.012f
+            val tickY = phaseTextY + tickPaint.textSize + h * 0.016f
             canvas.drawText("6 AM", barLeft, tickY, tickPaint)
             canvas.drawText("2 PM", barLeft + barWidth * (480f / 1440f), tickY, tickPaint)
             canvas.drawText("10 PM", barLeft + barWidth * (960f / 1440f), tickY, tickPaint)
