@@ -124,7 +124,7 @@ class ManageContentActivity : Activity() {
     }
 
     private fun removeButton(onClick: () -> Unit) = TextView(this).apply {
-        text = "✕"
+        text = "X"
         setTextColor(Color.parseColor("#FF5C5C"))
         textSize = 18f
         setPadding(20, 10, 20, 10)
@@ -143,24 +143,6 @@ class ManageContentActivity : Activity() {
             text = title; setTextColor(Color.WHITE); textSize = 14f
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         rowLayout.addView(removeButton(onRemove))
-        return rowLayout
-    }
-}        this.text = text; setTextColor(Color.GRAY); textSize = 14f; setPadding(0, 12, 0, 12)
-    }
-
-    private fun row(title: String, onRemove: () -> Unit): LinearLayout {
-        val rowLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 16, 0, 16)
-        }
-        rowLayout.addView(TextView(this).apply {
-            text = title; setTextColor(Color.WHITE)
-        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        rowLayout.addView(Button(this).apply {
-            text = "✕"
-            setOnClickListener { onRemove() }
-        })
         return rowLayout
     }
 }
