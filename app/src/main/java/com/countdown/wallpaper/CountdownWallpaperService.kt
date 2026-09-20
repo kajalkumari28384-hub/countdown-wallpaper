@@ -98,19 +98,34 @@ class CountdownWallpaperService : WallpaperService() {
             }
         }
 
-        /** Green 6am-2pm, Yellow 2pm-10pm, Red draining 10pm -> 6am (IST). */
+        /**
+         * Each 8-hour phase is its own "tank": full at the start of that
+         * phase, drains to empty by the end of it, then the next phase
+         * resets to full with its own color. (IST)
+         *   6am-2pm  -> green,  drains over those 8 hours
+         *   2pm-10pm -> yellow, drains over those 8 hours
+         *   10pm-6am -> red,    drains over those 8 hours
+         */
         private fun computeEnergy(now: Long): Pair<Int, Float> {
             val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"))
             cal.timeInMillis = now
             val minutesNow = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
             var sinceStart = minutesNow - 6 * 60
             if (sinceStart < 0) sinceStart += 1440
+
+            val phaseLength = 480f
             return when {
-                sinceStart < 480 -> Pair(Color.parseColor("#43A047"), 1f)
-                sinceStart < 960 -> Pair(Color.parseColor("#FDD835"), 1f)
+                sinceStart < 480 -> {
+                    val fill = 1f - (sinceStart / phaseLength)
+                    Pair(Color.parseColor("#43A047"), fill.coerceIn(0f, 1f))
+                }
+                sinceStart < 960 -> {
+                    val fill = 1f - ((sinceStart - 480) / phaseLength)
+                    Pair(Color.parseColor("#FDD835"), fill.coerceIn(0f, 1f))
+                }
                 else -> {
-                    val drain = (sinceStart - 960).toFloat() / 480f
-                    Pair(Color.parseColor("#E53935"), (1f - drain).coerceIn(0f, 1f))
+                    val fill = 1f - ((sinceStart - 960) / phaseLength)
+                    Pair(Color.parseColor("#E53935"), fill.coerceIn(0f, 1f))
                 }
             }
         }
